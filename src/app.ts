@@ -1,67 +1,90 @@
-import express, { Express } from 'express'
+import express from 'express'
 import { join } from 'path'
 import cors from 'cors'
 import { Logger } from 'common-stuff'
 import { createHttpTerminator } from 'http-terminator'
+import rateLimit from 'express-rate-limit'
 
 import { TorrentClient } from './services/torrent-client'
-import { readConfig, Config, frontendBuildPath } from './config'
-import { createLogger } from './helpers/logging'
+import { readConfig, Config, frontendBuildPath, Globals } from './config'
+import { createLogger, LogsStorage } from './services/logging'
 import { getApiRouter } from './api'
 
 import 'express-async-errors'
 
-function createApp(config: Config, logger: Logger): Express {
-    logger.info(`Starting app in ${config.environment} environment`)
+export interface AppOptions {
+    config?: Partial<Config>
+    configFile?: string
+    logger?: Logger
+    client?: TorrentClient
+}
+
+export function createApp(options?: AppOptions): Globals {
+    const config = readConfig(options?.configFile, options?.config)
+    const logStorage = new LogsStorage({
+        limit: config.logging.storeLimit
+    })
+    const logger = options?.logger ? options.logger : createLogger(config, logStorage)
+
+    const client =
+        options?.client ??
+        new TorrentClient({
+            logger,
+            ...config.torrents,
+        })
 
     const app = express()
     app.use(cors())
     app.use(express.json())
 
     if (config.trustProxy) {
-        logger.info('Enabling proxy support')
         app.set('trust proxy', true)
     }
 
-    return app
-}
+    app.use(
+        rateLimit({
+            windowMs: 60 * 1000,
+            max: config.security.rpm,
+        })
+    )
 
-export async function setup(options?: { configFile: string }): Promise<void> {
-    const { configFile } = options || {}
-    const config = await readConfig(configFile)
-    const logger = createLogger(config)
-
-    const app = createApp(config, logger)
-    const client = await TorrentClient.create({
-        logger,
-        ...config.torrents,
-    })
-
-    const globals = {
-        config,
-        logger,
-    }
-
-    app.use(getApiRouter(globals, client))
+    app.use(
+        getApiRouter(
+            {
+                config,
+                logger,
+                logStorage,
+                app,
+                client
+            }
+        )
+    )
 
     if (config.security.frontendEnabled) {
-        logger.info('Serving frontend files')
-
         app.use(express.static(frontendBuildPath))
         app.use((_req, res) => {
             res.sendFile(join(frontendBuildPath, 'index.html'))
         })
     }
 
+    return { app, client, logger, config, logStorage }
+}
+
+export function createAndRunApp(options?: AppOptions): Globals {
+    const { app, config, logger, client, logStorage } = createApp(options)
+
     const server = app.listen(config.port, config.host, () => {
-        logger.info(`Listening on ${config.host}:${config.port}`)
+        const accessHost = config.host === '0.0.0.0' ? '127.0.0.1' : config.host
 
-        if (config.environment === 'development') {
-            const accessHost = config.host === '0.0.0.0' ? '127.0.0.1' : config.host
-
-            logger.info(`* Website on http://${accessHost}:${config.port}`)
-            logger.info(`* Docs on http://${accessHost}:${config.port}/api-docs`)
-        }
+        logger.info(
+            [
+                `Running ${config.environment} server on ${config.host}:${config.port}`,
+                ...(config.environment === 'development' ? [
+                    `* Website on http://${accessHost}:${config.port}`,
+                    `* Docs on http://${accessHost}:${config.port}/api-docs`
+                ] : [])
+            ].join('\n')
+        )
     })
 
     const httpTerminator = createHttpTerminator({
@@ -74,13 +97,13 @@ export async function setup(options?: { configFile: string }): Promise<void> {
         try {
             await httpTerminator.terminate()
         } catch (err) {
-            logger.error(`Error while terminating HTTP server: ${err}`)
+            logger.warn(`Error while terminating HTTP server: ${err}`)
         }
 
         try {
             await client.destroy()
         } catch (err) {
-            logger.error(`Error while terminating torrents client: ${err}`)
+            logger.warn(`Error while terminating torrents client: ${err}`)
         }
 
         process.exit()
@@ -88,4 +111,6 @@ export async function setup(options?: { configFile: string }): Promise<void> {
 
     process.on('SIGTERM', shutdown)
     process.on('SIGINT', shutdown)
+
+    return { app, config, logger, client, logStorage }
 }

@@ -124,6 +124,7 @@ paths:
                 - $ref: '#/components/parameters/file'
                 - $ref: '#/components/parameters/fileType'
                 - $ref: '#/components/parameters/fileIndex'
+                - $ref: '#/components/parameters/output'
             responses:
                 200:
                     description: OK
@@ -151,6 +152,7 @@ paths:
                 - $ref: '#/components/parameters/file'
                 - $ref: '#/components/parameters/fileType'
                 - $ref: '#/components/parameters/fileIndex'
+                - $ref: '#/components/parameters/output'
             responses:
                 200:
                     description: OK
@@ -325,6 +327,30 @@ paths:
                     $ref: '#/components/responses/401'
                 403:
                     $ref: '#/components/responses/403'
+    /api/logs:
+        get:
+            operationId: getLogs
+            summary: "Retrieve latest server logs"
+            tags:
+                - dashboard
+            security:
+            - apiKey: []
+            responses:
+                200:
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                type: array
+                                items:
+                                    $ref: '#/components/schemas/Log'
+                                    
+                400:
+                    $ref: '#/components/responses/400'
+                401:
+                    $ref: '#/components/responses/401'
+                403:
+                    $ref: '#/components/responses/403'
 components:
     parameters:
         torrentParam:
@@ -363,6 +389,14 @@ components:
             allowReserved: true
             schema:
                 type: number
+        output:
+            in: query
+            name: output
+            description: Set output type
+            allowReserved: true
+            schema:
+                type: string
+                enum: ['zip']
     schemas:
         UsageModel:
             type: object
@@ -397,7 +431,9 @@ components:
                     type: number
                 playlist:
                     type: string
-            required: ['link', 'infoHash', 'name', 'started', 'updated', 'files', 'downloaded', 'downloadSpeed', 'playlist']
+                streamZip:
+                    type: string
+            required: ['link', 'infoHash', 'name', 'started', 'updated', 'files', 'downloaded', 'downloadSpeed', 'playlist', 'streamZip']
         TorrentFileModel:
             type: object
             properties:
@@ -411,7 +447,9 @@ components:
                     type: number
                 stream:
                     type: string
-            required: ['name', 'path', 'length', 'type', 'stream']
+                streamZip:
+                    type: string
+            required: ['name', 'path', 'length', 'type', 'stream', 'streamZip']
         ProviderModel:
             type: object
             properties:
@@ -518,6 +556,20 @@ components:
                 success:
                     type: boolean
             required: ['success']
+        Log:
+            type: object
+            description: Server log entry
+            properties:
+                message:
+                    description: Log message
+                    type: string
+                time:
+                    description: Log timestamp in seconds
+                    type: number
+                level:
+                    type: string
+                    enum: ['debug', 'info', 'warn', 'error']
+            required: ['message', 'time', 'level']
     responses:
         204:
             description: Successful operation

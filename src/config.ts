@@ -1,8 +1,11 @@
-import { readFile } from 'fs'
-import { promisify } from 'util'
+import { readFileSync } from 'fs'
 import { resolve } from 'path'
 import { Logger, merge, convertToNested, camelCase } from 'common-stuff'
 import { z } from 'zod'
+import { Express } from 'express'
+
+import { LogsStorage } from './services/logging'
+import { TorrentClient } from './services/torrent-client'
 
 export enum Environment {
     Production = 'production',
@@ -53,6 +56,12 @@ const configSchema = z.object({
          * Default: `info`
          */
         level: z.enum(['debug', 'info', 'warn', 'error']),
+        /**
+         * How many latest logs should be stored and retrieved by API or shown in the dashboard.
+         *
+         * Default: `100`
+         */
+        storeLimit: z.number().nonnegative()
     }),
     /**
      * Torrent client settings
@@ -89,6 +98,18 @@ const configSchema = z.object({
          * Default: `[]`
          */
         peerAddresses: z.array(z.string()),
+        /**
+         * Max download speed (bytes/sec) over all torrents
+         *
+         * Default: `5242880`
+         */
+        downloadLimit: z.number(),
+        /**
+         * Max upload speed (bytes/sec) over all torrents
+         *
+         * Default: `0`
+         */
+        uploadLimit: z.number(),
     }),
     /**
      * Security settings
@@ -134,6 +155,12 @@ const configSchema = z.object({
          * Default: undefined
          */
         apiKey: z.string().optional(),
+        /**
+         * Limit requests per minute for single IP
+         *
+         * Default: 300
+         */
+        rpm: z.number(),
     }),
     /**
      * Get ip from `X-Forwarded-*` header.
@@ -146,7 +173,9 @@ const configSchema = z.object({
 export type Config = z.infer<typeof configSchema>
 
 export const isInGoogleAppEngine = process.env.GAE_APPLICATION ? true : false
-export const isInHeroku = process.env._ ? process.env._.toLowerCase().includes('heroku') : false
+export const isInHeroku = process.env._
+    ? process.env._.toLowerCase().includes('heroku')
+    : false
 
 const parsedEnv = convertToNested(process.env, {
     separator: '__',
@@ -168,6 +197,7 @@ const defaultConfig: Config = {
             },
         ],
         level: 'info',
+        storeLimit: 100
     },
     torrents: {
         path: '/tmp/torrent-stream-server',
@@ -176,6 +206,8 @@ const defaultConfig: Config = {
         announce: [],
         urlList: [],
         peerAddresses: [],
+        uploadLimit: 1000,
+        downloadLimit: 5242880,
     },
     security: {
         streamApi: {
@@ -184,23 +216,36 @@ const defaultConfig: Config = {
         apiKey: (parsedEnv.apiKey as any) || undefined,
         frontendEnabled: true,
         apiEnabled: true,
+        rpm: 300,
     },
 }
 
-export async function readConfig(path: string | undefined): Promise<Config> {
+export function readConfig(
+    path?: string,
+    overwrites?: Partial<Config>
+): Config {
     try {
         return configSchema.parse(
             merge(
                 merge(
-                    defaultConfig,
-                    path ? JSON.parse(await promisify(readFile)(path, { encoding: 'utf8' })) : {}
+                    merge(
+                        defaultConfig,
+                        path
+                            ? JSON.parse(
+                                  readFileSync(path, { encoding: 'utf8' })
+                              )
+                            : {}
+                    ),
+                    (parsedEnv.config || undefined) ?? {}
                 ),
-                parsedEnv.config || {}
+                overwrites ?? {}
             )
         )
     } catch (err) {
         if (err instanceof z.ZodError) {
-            const errors = err.errors.map((v) => `${v.message} @ ${v.path.join('.')}`)
+            const errors = err.errors.map(
+                (v) => `${v.message} @ ${v.path.join('.')}`
+            )
             throw Error(`Configuration error: ${errors.join(', ')}`)
         }
         throw Error(`Configuration error: ${err}`)
@@ -215,4 +260,7 @@ export const frontendBuildPath = resolve(__dirname, '../frontend/build')
 export interface Globals {
     config: Config
     logger: Logger
+    logStorage: LogsStorage
+    app: Express
+    client: TorrentClient
 }
